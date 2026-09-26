@@ -75,14 +75,23 @@ async def get_dashboard_text(user_id: int):
 async def add_income_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(TransactionInput.waiting_for_input)
-    await state.update_data(operation_type="income", dashboard_message_id=callback.message.message_id)
-    await callback.message.answer("Введи сумму дохода и описание через пробел\n(например: 40000 премия):")
+    prompt_msg = await callback.message.answer("Введи сумму дохода и описание через пробел\n(например: 40000 премия):")
+    await state.update_data(
+        operation_type="income",
+        dashboard_message_id=callback.message.message_id,
+        prompt_message_id=prompt_msg.message_id
+    )   
 @dp.callback_query(F.data == "add_expense")
 async def add_expense_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(TransactionInput.waiting_for_input)
-    await state.update_data(operation_type="expense", dashboard_message_id=callback.message.message_id)
-    await callback.message.answer("Введи сумму расхода и описание через пробел\n(например: 250 такси):")
+    prompt_msg = await callback.message.answer("Введи сумму расхода и описание через пробел\n(например: 250 такси):")
+    await state.update_data(
+        operation_type="expense",
+        dashboard_message_id=callback.message.message_id,
+        prompt_message_id=prompt_msg.message_id
+    )   
+   
 @dp.message(TransactionInput.waiting_for_input)
 async def process_transaction(message: Message, state: FSMContext):
     parts = message.text.strip().split(maxsplit=1)
@@ -96,7 +105,7 @@ async def process_transaction(message: Message, state: FSMContext):
     category = parts[1] if len(parts) > 1 else "Прочее"
     data = await state.get_data()
     operation_type = data.get("operation_type")
-    dashboard_message_id = data.get("dashboard_message_id")
+    prompt_message_id = data.get("dashboard_message_id")
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO transactions (user_id, type, amount, category) VALUES (?,?,?,?)",
@@ -104,18 +113,12 @@ async def process_transaction(message: Message, state: FSMContext):
         )
         await db.commit()
     await state.clear()
-    new_text = await get_dashboard_text(message.from_user.id)
     try:
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=dashboard_message_id,
-            text=new_text,
-            reply_markup=dashboard_kb
-        )
+        if prompt_message_id:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
+        await message.delete()
     except Exception:
-        await message.answer(new_text, reply_markup=dashboard_kb)
-    znak = "+" if operation_type == "income" else "-"
-    await message.answer(f"Записано: {znak} {amount:,.0f} Р ({category})")     
+        pass  
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
