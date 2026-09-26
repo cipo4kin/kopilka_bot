@@ -43,7 +43,15 @@ dashboard_kb = InlineKeyboardMarkup(
         [
             InlineKeyboardButton(text="+ Добавить доход", callback_data="add_income"),
             InlineKeyboardButton(text="- Добавить расход", callback_data="add_expense")
+        ],
+        [
+            InlineKeyboardButton(text="📜 История операций", callback_data="show_history")
         ]
+    ]
+)
+history_kb = InlineKeyboardMarkup(
+    inline_keyboard = [
+        [InlineKeyboardButton(text="🔙 Назад к табло", callback_data="back_to_dashboard")]
     ]
 )
 async def get_dashboard_text(user_id: int):
@@ -91,7 +99,31 @@ async def add_expense_callback(callback: CallbackQuery, state: FSMContext):
         dashboard_message_id=callback.message.message_id,
         prompt_message_id=prompt_msg.message_id
     )   
-   
+@dp.callback_query(F.data == "show_history")
+async def show_history_callback(callback: CallbackQuery):
+    await callback.answer()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT type, amount, category FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5",
+            (callback.from_user.id,)
+        ) as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        text = "📜 История операций пока пуста."
+    else:
+        text = "📜 Последние операции:\n\n"
+        for r in rows:
+            op_type, amount, category = r[0], r[1], r[2]
+            icon = "🟢 +" if op_type == "income" else "🔴 -"
+            text += f"{icon} {amount:,.0f} Р — {category}\n"
+    await callback.message.edit_text(text, reply_markup=history_kb)
+@dp.callback_query(F.data == "back_to_dashboard")
+async def back_to_dashboard_callback(callback: CallbackQuery):
+    await callback.answer()
+    text = await get_dashboard_text(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=dashboard_kb)
+
+  
 @dp.message(TransactionInput.waiting_for_input)
 async def process_transaction(message: Message, state: FSMContext):
     parts = message.text.strip().split(maxsplit=1)
@@ -105,7 +137,8 @@ async def process_transaction(message: Message, state: FSMContext):
     category = parts[1] if len(parts) > 1 else "Прочее"
     data = await state.get_data()
     operation_type = data.get("operation_type")
-    prompt_message_id = data.get("dashboard_message_id")
+    dashboard_message_id = data.get("dashboard_message_id")
+    prompt_message_id = data.get("prompt_message_id")
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO transactions (user_id, type, amount, category) VALUES (?,?,?,?)",
@@ -118,7 +151,17 @@ async def process_transaction(message: Message, state: FSMContext):
             await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
         await message.delete()
     except Exception:
-        pass  
+        pass
+    new_text = await get_dashboard_text(message.from_user.id)
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=dashboard_message_id,
+            text=new_text,
+            reply_markup=dashboard_kb
+        )
+    except Exception:
+        await message.answer(new_text, reply_markup=dashboard_kb)  
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
