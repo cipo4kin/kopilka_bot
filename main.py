@@ -54,6 +54,21 @@ history_kb = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="🔙 Назад к табло", callback_data="back_to_dashboard")]
     ]
 )
+def get_dashboard_kb(is_completed: bool = False):
+    goal_btn_text = "🚀Новая мечта" if is_completed else "⚙️Изменить цель"
+    goal_btn_cb = "new_goal_reset" if is_completed else "edit_goal_keep"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+            InlineKeyboardButton(text="+ Добавить доход", callback_data="add_income"),
+            InlineKeyboardButton(text="- Добавить расход", callback_data="add_expense")
+            ],
+            [
+            InlineKeyboardButton(text="📜 История операций", callback_data="show_history"),
+            InlineKeyboardButton(text=goal_btn_text, callback_data=goal_btn_cb)
+            ]
+        ]
+    )
 async def get_dashboard_text(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
 
@@ -70,7 +85,11 @@ async def get_dashboard_text(user_id: int):
     filled = int(percent_clamped // 10)
     empty = 10 - filled
     bar = f"[{'█' * filled}{'░' * empty}] {percent:.1f}%"
-    return (
+    header = "🎉 ПОЗДРАВЛЯЕМ! ЦЕЛЬ ДОСТИГНУТА! 🚀\n\n" if saved >= goal_amount and goal_amount > 0 else ""
+    is_completed = (saved >= goal_amount and goal_amount > 0)
+    kb = get_dashboard_kb(is_completed)
+    text =  (
+    f"{header}"
     f"Цель: {goal_name}\n"
     f"Нужно: {goal_amount:,.0f} Р\n\n"
     f"Доходы: {total_income:,.0f} Р\n"
@@ -78,6 +97,7 @@ async def get_dashboard_text(user_id: int):
     f"Накоплено: {saved:,.0f} Р\n\n"
     f"Прогресс: {bar}"
     )
+    return text, kb
 
 @dp.callback_query(F.data == "add_income")
 async def add_income_callback(callback: CallbackQuery, state: FSMContext):
@@ -120,8 +140,8 @@ async def show_history_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "back_to_dashboard")
 async def back_to_dashboard_callback(callback: CallbackQuery):
     await callback.answer()
-    text = await get_dashboard_text(callback.from_user.id)
-    await callback.message.edit_text(text, reply_markup=dashboard_kb)
+    text, kb = await get_dashboard_text(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=kb)
 
   
 @dp.message(TransactionInput.waiting_for_input)
@@ -152,24 +172,24 @@ async def process_transaction(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    new_text = await get_dashboard_text(message.from_user.id)
+    text, kb = await get_dashboard_text(message.from_user.id)
     try:
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=dashboard_message_id,
-            text=new_text,
-            reply_markup=dashboard_kb
+            text=text,
+            reply_markup=kb
         )
     except Exception:
-        await message.answer(new_text, reply_markup=dashboard_kb)  
+        await message.answer(text, reply_markup=kb)  
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT goal_name, goal_amount FROM users WHERE user_id = ?",(message.from_user.id,)) as cursor:
             user = await cursor.fetchone()
             if user:
-                text = await get_dashboard_text(message.from_user.id)
-                await message.answer(text, reply_markup=dashboard_kb)
+                text, kb = await get_dashboard_text(message.from_user.id)
+                await message.answer(text, reply_markup=kb)
             else:
                 await state.set_state(GoalSetup.waiting_for_goal_name)
                 await message.answer("Привет! Я копилка!\nКакая у тебя финансовая цель или мечта?")
@@ -196,8 +216,8 @@ async def goal_amount_chosen(message: Message, state: FSMContext):
         )
         await db.commit()
     await state.clear()
-    text = await get_dashboard_text(message.from_user.id)
-    await message.answer(text, reply_markup=dashboard_kb)
+    text, kb = await get_dashboard_text(message.from_user.id)
+    await message.answer(text, reply_markup=kb)
 async def main():
    await init_db()
    await dp.start_polling(bot)
