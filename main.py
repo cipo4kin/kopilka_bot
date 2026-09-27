@@ -7,11 +7,12 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 import aiosqlite
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-session = AiohttpSession(proxy="http://127.0.0.1:10809")
+proxy_url = os.getenv("PROXY_URL")
+session = AiohttpSession(proxy=proxy_url) if proxy_url else None
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 DB_NAME = "finance.db"
@@ -38,17 +39,7 @@ category TEXT,
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
 """)
         await db.commit()
-dashboard_kb = InlineKeyboardMarkup(
-    inline_keyboard= [
-        [
-            InlineKeyboardButton(text="+ Добавить доход", callback_data="add_income"),
-            InlineKeyboardButton(text="- Добавить расход", callback_data="add_expense")
-        ],
-        [
-            InlineKeyboardButton(text="📜 История операций", callback_data="show_history")
-        ]
-    ]
-)
+
 history_kb = InlineKeyboardMarkup(
     inline_keyboard = [
         [InlineKeyboardButton(text="🔙 Назад к табло", callback_data="back_to_dashboard")]
@@ -142,10 +133,25 @@ async def back_to_dashboard_callback(callback: CallbackQuery):
     await callback.answer()
     text, kb = await get_dashboard_text(callback.from_user.id)
     await callback.message.edit_text(text, reply_markup=kb)
+@dp.callback_query(F.data.in_(["new_goal_reset", "edit_goal_keep"]))
+async def change_goal_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    reset = (callback.data == "new_goal_reset")
+    await state.set_state(GoalSetup.waiting_for_goal_name)
 
+    prompt_text = ("🎉 Поздравляю с победой! На какую новую мечту начнем копить с чистого листа?" if reset else "Какое новое название для цели?")
+    prompt_msg = await callback.message.answer(prompt_text)
+
+    await state.update_data(
+        reset_transactions=reset,
+        dashboard_message_id=callback.message.message_id,
+        prompt_message_id=prompt_msg.message_id
+    )
   
 @dp.message(TransactionInput.waiting_for_input)
 async def process_transaction(message: Message, state: FSMContext):
+    if not message.text or not message.text.strip():
+        return  
     parts = message.text.strip().split(maxsplit=1)
     try:
         amount = float(parts[0].replace(" ", "").replace(",", "."))
@@ -181,7 +187,8 @@ async def process_transaction(message: Message, state: FSMContext):
             reply_markup=kb
         )
     except Exception:
-        await message.answer(text, reply_markup=kb)  
+        await message.answer(text, reply_markup=kb)
+     
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -195,9 +202,17 @@ async def start_cmd(message: Message, state: FSMContext):
                 await message.answer("Привет! Я копилка!\nКакая у тебя финансовая цель или мечта?")
 @dp.message(GoalSetup.waiting_for_goal_name)
 async def goal_name_chosen(message: Message, state: FSMContext):
-    await state.update_data(goal_name=message.text)
-    await state.set_state(GoalSetup.waiting_for_goal_amount)
-    await message.answer("Отличная цель! А какая сумма нужна? (напиши только число, например: 250000)")
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+    try:
+        if prompt_msg_id:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+        await message.delete()
+    except Exception:
+        pass
+    prompt_msg = await message.answer("Отличная цель! А какая сумма нужна? (напиши только число, например: 250000)")
+    await state.update_data(goal_name=message.text, prompt_message_id=prompt_msg.message_id) 
+    await state.set_state(GoalSetup.waiting_for_goal_amount)   
 @dp.message(GoalSetup.waiting_for_goal_amount)
 async def goal_amount_chosen(message: Message, state: FSMContext):
     try:
@@ -209,15 +224,39 @@ async def goal_amount_chosen(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     goal_name = data.get("goal_name")
+    reset = data.get("reset_transactions", False)
+    dashboard_message_id = data.get("dashboard_message_id")
+    prompt_message_id = data.get("prompt_message_id")
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
-            "INSERT INTO users (user_id, goal_name, goal_amount) VALUES (?,?,?)",
+            "INSERT OR REPLACE INTO users (user_id, goal_name, goal_amount) VALUES (?,?,?)",
             (message.from_user.id, goal_name, amount)
         )
+        if reset:
+            await db.execute("DELETE FROM transactions WHERE user_id = ?", (message.from_user.id,))
         await db.commit()
     await state.clear()
+    try:
+        if prompt_message_id:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
+        await message.delete()
+    except Exception:
+        pass
     text, kb = await get_dashboard_text(message.from_user.id)
-    await message.answer(text, reply_markup=kb)
+    if dashboard_message_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=dashboard_message_id,
+                text=text,
+                reply_markup=kb
+            )
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb)         
+   
+    
 async def main():
    await init_db()
    await dp.start_polling(bot)
