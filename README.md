@@ -43,8 +43,8 @@
 
 ```bash
 # 1. Клонируем репу
-git clone https://github.com/cipo4kin/kopeyka-bot.git
-cd kopeyka-bot
+git clone https://github.com/cipo4kin/kopilka_bot.git
+cd kopilka_bot
 
 # 2. Создаем и запускаем виртуальное окружение
 python -m venv .venv
